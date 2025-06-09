@@ -1,4 +1,4 @@
-import streamlit as st
+from flask import Flask, render_template, request, send_file
 import subprocess
 import os
 from reportlab.lib.pagesizes import A4
@@ -6,23 +6,23 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
 import io
+import re
 import google.generativeai as genai
 from dotenv import load_dotenv
-import zipfile
 
-# Load environment variables
 load_dotenv()
+
+# Get the API key from the environment variable
 api_key = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=api_key)
-
 generation_config = {
-    "temperature": 1,
-    "top_p": 1,
-    "top_k": 1,
-}
+        "temperature": 1,
+        "top_p": 1,
+        "top_k": 1,
+    }
 
 model = genai.GenerativeModel(model_name="gemini-1.5-flash",
-                              generation_config=generation_config)
+                                  generation_config=generation_config)
 
 latex_code = r"""
 \documentclass[11pt,a4paper,sans]{moderncv}
@@ -150,45 +150,7 @@ AI Engineer with experience of building and deploying AI solutions, specializing
 \end{document}
 """
 
-st.set_page_config(page_title="Resume Generator", layout="centered")
-
-st.markdown("""
-    <style>
-        .main {
-            background: linear-gradient(135deg, #e0f2fe, #bae6fd);
-            padding: 40px;
-        }
-        .stTextArea > label {
-            font-size: 20px;
-            color: #0c4a6e;
-        }
-        .stButton > button {
-            background-color: #2563eb;
-            color: white;
-            font-weight: bold;
-            border-radius: 8px;
-            padding: 10px 20px;
-        }
-        .stButton > button:hover {
-            background-color: #1e40af;
-        }
-        .cover-letter-box {
-            background-color: #f0f9ff;
-            padding: 20px;
-            border-radius: 10px;
-            color: #1e293b;
-            border: 1px solid #cbd5e1;
-            max-height: 400px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown("<h1 style='text-align:center; color:#0c4a6e;'>Paste Job Description</h1>", unsafe_allow_html=True)
-
-job_desc = st.text_area("Paste Job Description Here:", height=250)
-
+app = Flask(__name__)
 
 def resumeModification(latex_code, jobDescription, model):
     try:
@@ -238,11 +200,12 @@ def resumeModification(latex_code, jobDescription, model):
             Job Description:
             {jobDescription}
             """
+        print("Going for generating the latex")
         response = model.generate_content(prompt)
+        print("latex code generated ")
         return response.text.replace("`", "").replace("latex", "").strip()
     except Exception as e:
-        st.error(f"Error generating LaTeX: {e}")
-        return ""
+        print("error ", e)
 
 def generateCoverLetter(leatexCode, jobDescription, model):
     prompt = f"""
@@ -271,26 +234,34 @@ def generateCoverLetter(leatexCode, jobDescription, model):
     response = model.generate_content(prompt)
     return response.text.strip()
 
-if st.button("Generate Resume and Cover Letter"):
-    if not job_desc.strip():
-        st.error("Job description is required.")
-    else:
-        with st.spinner("Generating Resume and Cover Letter..."):
+@app.route("/", methods=["GET", "POST"])
+def index():
+    cover_letter = ""
+    pdf_path = "AqibAIEngineer.pdf"
+
+    if request.method == "POST":
+        job_desc = request.form.get("jobDescription", "")
+
+        if not job_desc.strip():
+            return render_template("index.html", error="Job description is required.", pdf_exists=False)
+
+        try:
             modified_latex = resumeModification(latex_code, job_desc, model)
+
             with open("AqibAIEngineer.tex", "w", encoding="utf-8") as f:
                 f.write(modified_latex)
-            subprocess.run(["pdflatex", "-interaction=nonstopmode", "AqibAIEngineer.tex"],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            subprocess.run(["pdflatex", "-interaction=nonstopmode", "AqibAIEngineer.tex"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
             cover_letter_text = generateCoverLetter(modified_latex, job_desc, model)
 
             buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40,
-                                    topMargin=60, bottomMargin=40)
+            doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=60, bottomMargin=40)
+
             styles = getSampleStyleSheet()
-            header_style = ParagraphStyle('Header', parent=styles['Normal'], fontName='Times-Roman',
-                                          fontSize=12, leading=14, alignment=TA_LEFT)
-            justified_style = ParagraphStyle('Justify', parent=styles['Normal'], fontName='Times-Roman',
-                                             fontSize=12, leading=16, alignment=TA_JUSTIFY)
+            header_style = ParagraphStyle('Header', parent=styles['Normal'], fontName='Times-Roman', fontSize=12, leading=14, alignment=TA_LEFT)
+            justified_style = ParagraphStyle('Justify', parent=styles['Normal'], fontName='Times-Roman', fontSize=12, leading=16, alignment=TA_JUSTIFY)
+
             flowables = []
             header_lines = [
                 "Muhammad Aqib",
@@ -303,38 +274,32 @@ if st.button("Generate Resume and Cover Letter"):
             for line in header_lines:
                 flowables.append(Paragraph(line, header_style))
             flowables.append(Spacer(1, 24))
+
             for para in cover_letter_text.strip().split('\n'):
                 if para.strip():
                     flowables.append(Paragraph(para.strip(), justified_style))
                     flowables.append(Spacer(1, 12))
-            footer_lines = [
-                "Best Regards,",
-                "Muhammad Aqib",
-            ]
-            for line in footer_lines:
-                flowables.append(Paragraph(line, header_style))
 
             doc.build(flowables)
+
             with open('cover_letter.pdf', 'wb') as f:
                 f.write(buffer.getvalue())
 
-            st.markdown("""<h2 style='color:#0c4a6e;'>✅ Cover Letter (German)</h2>""", unsafe_allow_html=True)
-            st.markdown(f"<div class='cover-letter-box'>{cover_letter_text}</div>", unsafe_allow_html=True)
+            header_lines = [re.sub(r'<a[^>]*>(.*?)</a>', r'\1', line) for line in header_lines]
+            cover_letter =  "\n".join(header_lines) + "\n\n" + cover_letter_text
 
-            zip_buffer = io.BytesIO()
+        except Exception as e:
+            return render_template("index.html", error=f"An error occurred: {str(e)}", pdf_exists=False)
 
-            with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-                zip_file.write("AqibAIEngineer.pdf", arcname="AqibAIEngineer.pdf")
-                zip_file.write("cover_letter.pdf", arcname="cover_letter.pdf")
+    return render_template("index.html", cover_letter=cover_letter, pdf_exists=os.path.exists(pdf_path))
 
-            # Move the buffer's cursor to the beginning
-            zip_buffer.seek(0)
+@app.route("/download_resume")
+def download_resume():
+    return send_file("AqibAIEngineer.pdf", as_attachment=True)
 
-            # Streamlit download button for the combined ZIP
-            st.download_button(
-                label="📦 Download Resume & Cover Letter (ZIP)",
-                data=zip_buffer,
-                file_name="AqibApplicationBundle.zip",
-                mime="application/zip"
-            )
-            st.success("Resume and Cover Letter generated successfully!")
+@app.route("/download_cover_letter")
+def download_cover_letter():
+    return send_file("cover_letter.pdf", as_attachment=True)
+
+if __name__ == "__main__":
+    app.run()
